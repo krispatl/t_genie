@@ -13,7 +13,7 @@ export function buildImageRequest(
 ): { url: string; headers: Record<string, string>; body: string | FormData } {
   const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-flare";
   const requirements =
-    "Create the ARTWORK ONLY, no garment, product photograph, mockup, model or watermark. Isolate the composition on a genuinely transparent background. Use strong legible shapes, clean edges, and sufficient contrast. Keep the whole design within the canvas with breathing room. Include words only when explicitly requested in the concept.";
+    "Create exactly ONE complete artwork design in this image. Never include a grid, contact sheet, collage, repeated designs or multiple alternate concepts, even if the brief mentions producing several concepts; the studio handles variants in separate requests. Create the ARTWORK ONLY, no garment, product photograph, mockup, model or watermark. Isolate the composition on a genuinely transparent background. Use strong legible shapes, clean edges, and sufficient contrast. Keep the whole design within the canvas with breathing room. Include words only when explicitly requested in the concept.";
   const options = {
     model,
     n: 1,

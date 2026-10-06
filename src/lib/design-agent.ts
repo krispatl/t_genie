@@ -153,7 +153,7 @@ export const agentTools = [
         instruction: {
           type: "string",
           description:
-            "New: complete artwork brief. Refine: precise edit instruction, saying what to preserve. 8–1600 characters.",
+            "New: complete brief for ONE artwork, without batch counts or requests for variations (the app handles four concepts separately). Refine: precise edit instruction, saying what to preserve. 8–1600 characters.",
         },
         updated_prompt: {
           type: ["string", "null"],
