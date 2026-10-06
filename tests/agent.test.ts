@@ -50,12 +50,11 @@ const input = {
   concepts,
   selectedId: concepts[0].id,
 };
-const request = (body: unknown = input, code = "test-agent-studio") =>
+const request = (body: unknown = input) =>
   new Request("https://studio.example/api/agent", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-studio-code": code,
       origin: "https://studio.example",
     },
     body: JSON.stringify(body),
@@ -99,7 +98,7 @@ const state = (): AgentState => ({
   changes: [],
 });
 
-test("chat applies requested garment settings without generating artwork", async () => {
+test("public chat applies garment settings without a code or generating artwork", async () => {
   let round = 0;
   globalThis.fetch = async (url, options) => {
     assert.equal(url, "https://api.openai.com/v1/responses");
@@ -257,7 +256,9 @@ test("client cannot inject developer messages or exceed conversation limits", as
   globalThis.fetch = async () => {
     throw new Error("provider must not be called");
   };
-  assert.equal((await POST(request(input, "wrong"))).status, 401);
+  const crossOrigin = request();
+  crossOrigin.headers.set("origin", "https://other.example");
+  assert.equal((await POST(crossOrigin)).status, 403);
   assert.equal((await POST(request({ ...input, messages: [] }))).status, 400);
 });
 

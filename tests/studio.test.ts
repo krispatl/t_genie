@@ -6,8 +6,9 @@ import {
   sampleDesigns,
   type CartItem,
 } from "../src/lib/catalog";
-import { authorize, validAccessCode } from "../src/lib/server-security";
+import { authorize } from "../src/lib/server-security";
 import { POST } from "../src/app/api/generate/route";
+import { GET as status } from "../src/app/api/status/route";
 
 const environment = { ...process.env };
 const realFetch = globalThis.fetch;
@@ -30,12 +31,11 @@ const input = {
   color: "Black",
   count: 4,
 };
-const request = (body: unknown = input, code = "test-studio") =>
+const request = (body: unknown = input) =>
   new Request("https://studio.example/api/generate", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-studio-code": code,
       origin: "https://studio.example",
     },
     body: JSON.stringify(body),
@@ -70,23 +70,27 @@ test("generation validation rejects oversized, empty and excessive requests", ()
     assert.equal(generateSchema.safeParse(bad).success, false);
   assert.equal(generateSchema.safeParse(input).success, true);
 });
-test("access code comparison handles missing and mismatched secrets", () => {
-  assert.equal(validAccessCode("correct", "correct"), true);
-  assert.equal(validAccessCode("bad", "correct"), false);
-  assert.equal(validAccessCode(null, "correct"), false);
-  assert.equal(validAccessCode("", undefined), false);
+test("production is unlocked with or without a legacy studio access code", async () => {
+  assert.equal(request().headers.has("x-studio-code"), false);
+  assert.equal(authorize(request()), null);
+  assert.deepEqual(await (await status()).json(), {
+    enabled: true,
+    locked: false,
+  });
+  delete process.env.STUDIO_ACCESS_CODE;
+  assert.equal(authorize(request()), null);
+  assert.deepEqual(await (await status()).json(), {
+    enabled: true,
+    locked: false,
+  });
 });
-test("production denies missing code, invalid code and cross-origin calls", () => {
-  assert.equal(authorize(request(input, "wrong"))?.status, 401);
+test("production still denies cross-origin calls", () => {
   const crossOrigin = new Request("https://studio.example/api/generate", {
     headers: {
       origin: "https://other.example",
-      "x-studio-code": "test-studio",
     },
   });
   assert.equal(authorize(crossOrigin)?.status, 403);
-  delete process.env.STUDIO_ACCESS_CODE;
-  assert.equal(authorize(request())?.status, 503);
 });
 test("missing API key fails safely without upstream network access", async () => {
   delete process.env.OPENAI_API_KEY;
@@ -94,13 +98,16 @@ test("missing API key fails safely without upstream network access", async () =>
     throw new Error("must not call provider");
   };
   assert.equal((await POST(request())).status, 503);
+  assert.deepEqual(await (await status()).json(), {
+    enabled: false,
+    locked: false,
+  });
 });
 test("same-origin generation works behind a reverse proxy", () => {
   const proxied = new Request("http://localhost:3000/api/generate", {
     headers: {
       host: "studio.example",
       origin: "https://studio.example",
-      "x-studio-code": "test-studio",
     },
   });
   assert.equal(authorize(proxied), null);
@@ -108,25 +115,25 @@ test("same-origin generation works behind a reverse proxy", () => {
     headers: {
       host: "studio.example",
       origin: "not-an-origin",
-      "x-studio-code": "test-studio",
     },
   });
   assert.equal(authorize(invalid)?.status, 403);
 });
-test("invalid bodies and unauthorized requests never reach image API", async () => {
+test("invalid bodies and cross-origin requests never reach image API", async () => {
   let called = false;
   globalThis.fetch = async () => {
     called = true;
     return Response.json({});
   };
-  assert.equal((await POST(request({}, "wrong"))).status, 401);
+  const crossOrigin = request();
+  crossOrigin.headers.set("origin", "https://other.example");
+  assert.equal((await POST(crossOrigin)).status, 403);
   assert.equal((await POST(request({ ...input, count: 500 }))).status, 400);
   assert.equal(
     (
       await POST(
         new Request("https://studio.example/api/generate", {
           method: "POST",
-          headers: { "x-studio-code": "test-studio" },
           body: "not-json",
         }),
       )
@@ -135,7 +142,7 @@ test("invalid bodies and unauthorized requests never reach image API", async () 
   );
   assert.equal(called, false);
 });
-test("streams four distinct concepts and keeps the secret server-side", async () => {
+test("streams four concepts without an access code and keeps the API key server-side", async () => {
   const prompts: string[] = [];
   globalThis.fetch = async (url, options) => {
     assert.equal(url, "https://api.openai.com/v1/images/generations");
@@ -185,4 +192,16 @@ test("configured durable rate limit fails closed if storage is unavailable", asy
   process.env.UPSTASH_REDIS_REST_TOKEN = "test-redis";
   globalThis.fetch = async () => new Response("unavailable", { status: 503 });
   assert.equal((await POST(request())).status, 503);
+});
+
+test("public generation still enforces the configured studio rate limit", async () => {
+  process.env.UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
+  process.env.UPSTASH_REDIS_REST_TOKEN = "test-redis";
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, "https://example.upstash.io/pipeline");
+    const commands = JSON.parse(options?.body as string);
+    assert.match(commands[0][1], /^t-genie:generation:studio:/);
+    return Response.json([{ result: 13 }, { result: 1 }]);
+  };
+  assert.equal((await POST(request())).status, 429);
 });

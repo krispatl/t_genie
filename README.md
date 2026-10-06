@@ -2,7 +2,7 @@
 
 **Wear your imagination.** A conversational AI apparel design agent built with Next.js, React, and TypeScript, deployed on [Vercel](https://t-genie.vercel.app).
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fkrispatl%2Ft_genie&env=OPENAI_API_KEY,STUDIO_ACCESS_CODE&project-name=t-genie&repository-name=t-genie)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fkrispatl%2Ft_genie&env=OPENAI_API_KEY&project-name=t-genie&repository-name=t-genie)
 
 ## Run locally
 
@@ -22,9 +22,8 @@ Open `http://127.0.0.1:3000`. Without an API key, the app still works as a clear
 1. In Vercel, choose **Add New → Project** and import `krispatl/t_genie`.
 2. Keep the root directory at the repository root and the framework as **Next.js**. The repository includes the build/install configuration and lockfile.
 3. Add `OPENAI_API_KEY` as a sensitive server environment variable. Use a newly rotated key with a funded OpenAI API project.
-4. Set `STUDIO_ACCESS_CODE` to a long, random passphrase and share it only with intended studio users. This is separate from the API key. Chat and image generation are disabled in production if this code is missing.
-5. Optionally set `OPENAI_CHAT_MODEL` (default `gpt-5.4-mini`) and `OPENAI_IMAGE_MODEL` (default `gpt-image-2.5-flare`). The models must be available to your OpenAI project. GPT Image may require organization verification. The chat model must support Responses API function calling.
-6. Deploy. Each push to the connected production branch then updates the app. Enable Vercel Fluid compute and ensure the deployment supports the route's 300-second maximum duration.
+4. Optionally set `OPENAI_CHAT_MODEL` (default `gpt-5.4-mini`) and `OPENAI_IMAGE_MODEL` (default `gpt-image-2.5-flare`). The models must be available to your OpenAI project. GPT Image may require organization verification. The chat model must support Responses API function calling.
+5. Deploy. Each push to the connected production branch then updates the app. Enable Vercel Fluid compute and ensure the deployment supports the route's 300-second maximum duration. Chat and artwork generation are open for testing without an access code.
 
 Secrets are server-only and never use the `NEXT_PUBLIC_` prefix. They are not included in this repository. A locally configured `.env.local` is ignored by Git and is **not** automatically transferred to Vercel.
 
@@ -60,7 +59,7 @@ Chat history is saved in localStorage; the brief, concepts, saved designs, and b
 
 ## Generation access and rate limits
 
-`STUDIO_ACCESS_CODE` gates billable chat and image generation. It is held only in browser memory and sent in the `x-studio-code` request header over your HTTPS deployment. The OpenAI API key stays on the server. This shared beta access code is not a replacement for customer authentication in a public store.
+The studio is open for testing: visitors can chat with Genie and generate artwork without entering a code. An existing `STUDIO_ACCESS_CODE` environment variable is ignored. The OpenAI API key stays on the server; request validation, origin checks, and the studio-wide rate limits remain enabled.
 
 The app limits the studio to 120 chat turns and 12 artwork jobs per hour, each artwork job with at most four images. For a shared, durable limit across Vercel instances, set both `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from an Upstash Redis database. Configured limiter failures deny requests. Without Redis, the best-effort limiter is per server instance and resets on cold starts. Set an OpenAI project spend limit as an additional budget control before inviting users.
 
@@ -74,7 +73,7 @@ npm run typecheck
 npm run build
 ```
 
-The test suite covers multi-turn context, chat-driven design changes, concept selection, bounded tool execution, invalid tool arguments, atomic failure handling, multipart image refinement, prices and quantities, input limits, production access checks, reverse proxy origin handling, streamed concepts, partial provider failures, secret non-disclosure, and durable-limiter failure behavior. It mocks the provider and never consumes API credits.
+The test suite covers multi-turn context, chat-driven design changes, concept selection, bounded tool execution, invalid tool arguments, atomic failure handling, multipart image refinement, prices and quantities, input limits, code-free production access with a legacy access-code setting still present, reverse proxy origin handling, streamed concepts, partial provider failures, secret non-disclosure, and durable-limiter failure and quota behavior. It mocks the provider and never consumes API credits.
 
 Live verification on October 6, 2026 covered multi-turn chat, garment and quantity updates, four generated concepts, and a refinement that changed the selected concept's headphones to purple. Desktop/mobile layouts and conversation/project restoration after refresh were checked in a browser. Model availability and billing depend on the configured API project.
 

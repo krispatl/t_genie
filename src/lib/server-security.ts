@@ -1,13 +1,3 @@
-import { createHash, timingSafeEqual } from "node:crypto";
-
-export function validAccessCode(
-  received: string | null,
-  expected: string | undefined,
-) {
-  if (!expected || !received) return false;
-  const digest = (value: string) => createHash("sha256").update(value).digest();
-  return timingSafeEqual(digest(received), digest(expected));
-}
 export function authorize(
   request: Request,
 ): { status: number; error: string } | null {
@@ -17,29 +7,6 @@ export function authorize(
       error:
         "Genie isn’t connected yet. You can explore the studio with the sample designs.",
     };
-  if (
-    process.env.NODE_ENV === "production" &&
-    !process.env.STUDIO_ACCESS_CODE
-  ) {
-    return {
-      status: 503,
-      error:
-        "The studio owner needs to configure the studio access code before enabling Genie.",
-    };
-  }
-  if (
-    process.env.STUDIO_ACCESS_CODE &&
-    !validAccessCode(
-      request.headers.get("x-studio-code"),
-      process.env.STUDIO_ACCESS_CODE,
-    )
-  ) {
-    return {
-      status: 401,
-      error:
-        "Enter your studio access code to chat with Genie and create designs.",
-    };
-  }
   const origin = request.headers.get("origin");
   if (origin) {
     // Next.js may reconstruct request.url using an internal proxy hostname.
@@ -63,14 +30,9 @@ export function authorize(
 }
 const windows = new Map<string, { count: number; until: number }>();
 async function allowRequest(bucket: string, limit: number) {
-  // Shared studio code is the access boundary. Rate limit the studio as a whole,
-  // rather than trusting user-supplied forwarded IP headers.
-  const key =
-    `t-genie:${bucket}:` +
-    createHash("sha256")
-      .update(process.env.STUDIO_ACCESS_CODE || "local")
-      .digest("hex")
-      .slice(0, 16);
+  // The studio is open for testing. Keep an overall limit for each API rather
+  // than trusting user-supplied forwarded IP headers.
+  const key = `t-genie:${bucket}:studio`;
   const now = Date.now();
   const windowId = Math.floor(now / 3600000);
   if (

@@ -35,7 +35,6 @@ type Props = {
   brief: DesignBrief;
   design: Design;
   concepts: Design[];
-  accessCode: string;
   enabled: boolean;
   generating: boolean;
   completed: number;
@@ -48,7 +47,6 @@ type Props = {
     plan: GenerationPlan,
     selectedId: string | null,
   ) => Promise<{ count: number; error?: string }>;
-  onNeedAccess: (resume: (code: string) => void) => void;
   onStopGeneration: () => void;
   onBriefChange: (prompt: string) => void;
 };
@@ -103,14 +101,11 @@ export default function DesignAgent(props: Props) {
     if (chat.current) chat.current.scrollTop = chat.current.scrollHeight;
   }, [messages, thinking, changes]);
 
-  async function runTurn(
-    history: ConversationMessage[],
-    accessCode = props.accessCode,
-  ) {
+  async function runTurn(history: ConversationMessage[]) {
     if (sending.current || props.generating) return;
     if (!props.enabled) {
       setError(
-        "Genie isn’t connected yet. The studio owner needs to configure the OpenAI key and studio access code. Your message is saved here.",
+        "Genie isn’t connected yet. The studio owner needs to configure the OpenAI key. Your message is saved here.",
       );
       setFailedHistory(history);
       return;
@@ -131,7 +126,6 @@ export default function DesignAgent(props: Props) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-studio-code": accessCode,
         },
         body: JSON.stringify({
           messages: history.slice(-24),
@@ -148,10 +142,6 @@ export default function DesignAgent(props: Props) {
       });
       const result = await response.json();
       if (!response.ok) {
-        if (response.status === 401)
-          context.current.onNeedAccess((newCode) => {
-            void runTurn(history, newCode);
-          });
         throw new Error(result.error || "Genie couldn’t reply. Please retry.");
       }
       const reply = result as AgentReply;

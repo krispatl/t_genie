@@ -48,7 +48,7 @@ import {
   type GenerationPlan,
 } from "@/lib/design-agent";
 
-type Dialog = "saved" | "bag" | "how" | "size" | "access" | "zoom" | null;
+type Dialog = "saved" | "bag" | "how" | "size" | "zoom" | null;
 const inspiration = [
   "A cosmic cowboy riding a shooting star",
   "A sleepy cat running a tiny coffee shop",
@@ -89,9 +89,7 @@ export default function Studio() {
   const [completed, setCompleted] = useState(0);
   const [expected, setExpected] = useState(4);
   const [elapsed, setElapsed] = useState(0);
-  const [status, setStatus] = useState({ enabled: false, locked: false });
-  const [code, setCode] = useState("");
-  const [codeDraft, setCodeDraft] = useState("");
+  const [status, setStatus] = useState({ enabled: false });
   const [hydrated, setHydrated] = useState(false);
   const [showSizes, setShowSizes] = useState(false);
   const [checkout, setCheckout] = useState(false);
@@ -106,7 +104,6 @@ export default function Studio() {
     country: "United States",
   });
   const abort = useRef<AbortController | null>(null);
-  const pendingAccess = useRef<((code: string) => void) | null>(null);
   const productRef = useRef<HTMLElement>(null);
   const totalQuantity = Object.values(selectedSizes).reduce((a, b) => a + b, 0);
   const bagCount = cart.reduce((a, item) => a + item.quantity, 0);
@@ -201,10 +198,11 @@ export default function Studio() {
     const selection = concepts.find((item) => item.id === reply.selectedId);
     if (selection) setDesign(selection);
   }
-  async function generate(
-    accessCode = code,
-    options?: { brief: DesignBrief; reference?: Design; instruction?: string },
-  ): Promise<{ count: number; error?: string }> {
+  async function generate(options?: {
+    brief: DesignBrief;
+    reference?: Design;
+    instruction?: string;
+  }): Promise<{ count: number; error?: string }> {
     const requested = options?.brief || designBrief;
     const count = options?.reference ? 1 : 4;
     if (busy)
@@ -218,13 +216,6 @@ export default function Studio() {
         "You’re exploring sample designs. The studio owner can connect OpenAI to create something new.",
       );
       return { count: 0, error: "The studio owner needs to connect OpenAI." };
-    }
-    if (status.locked && !accessCode) {
-      pendingAccess.current = (newCode) => {
-        void generate(newCode, options);
-      };
-      setDialog("access");
-      return { count: 0, error: "Unlock the studio to generate artwork." };
     }
     setError("");
     setBusy(true);
@@ -298,7 +289,6 @@ export default function Studio() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-studio-code": accessCode,
         },
         body: JSON.stringify({
           prompt: requested.prompt,
@@ -313,10 +303,6 @@ export default function Studio() {
       });
       if (!response.ok) {
         const data = await response.json();
-        if (response.status === 401) {
-          setCode("");
-          setDialog("access");
-        }
         throw new Error(
           data.error || "We couldn’t start generation. Please try again.",
         );
@@ -401,7 +387,7 @@ export default function Studio() {
         : undefined;
     if (plan.mode === "refine" && !reference)
       return { count: 0, error: "Select a concept to refine first." };
-    return generate(code, { brief, reference, instruction: plan.instruction });
+    return generate({ brief, reference, instruction: plan.instruction });
   }
   function chooseSample(item: Design) {
     setDesign(item);
@@ -646,7 +632,6 @@ export default function Studio() {
             brief={designBrief}
             design={design}
             concepts={concepts}
-            accessCode={code}
             enabled={status.enabled}
             generating={busy}
             completed={completed}
@@ -655,10 +640,6 @@ export default function Studio() {
             generationError={error}
             onApply={applyAgentReply}
             onGenerate={generateFromAgent}
-            onNeedAccess={(resume) => {
-              pendingAccess.current = resume;
-              setDialog("access");
-            }}
             onStopGeneration={() => abort.current?.abort()}
             onBriefChange={setPrompt}
           />
@@ -1088,44 +1069,6 @@ export default function Studio() {
           >
             Let’s make something <ArrowRight size={16} />
           </button>
-        </Modal>
-      )}
-      {dialog === "access" && (
-        <Modal title="Your studio, unlocked." onClose={() => setDialog(null)}>
-          <p className="modal-intro">
-            Enter the access code from the studio owner to chat with Genie and
-            create original artwork.
-          </p>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              setCode(codeDraft);
-              setDialog(null);
-              const resume = pendingAccess.current;
-              pendingAccess.current = null;
-              if (resume) resume(codeDraft);
-            }}
-          >
-            <label className="field-label" htmlFor="studio-code">
-              Studio access code
-            </label>
-            <input
-              autoFocus
-              id="studio-code"
-              className="text-input"
-              type="password"
-              value={codeDraft}
-              onChange={(e) => setCodeDraft(e.target.value)}
-              required
-              autoComplete="off"
-            />
-            <p className="muted">
-              This is the studio passphrase, never your OpenAI API key.
-            </p>
-            <button className="primary full" type="submit">
-              <LockKeyhole size={16} /> Unlock Genie
-            </button>
-          </form>
         </Modal>
       )}
       {dialog === "zoom" && (
