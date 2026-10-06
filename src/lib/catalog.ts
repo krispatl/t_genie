@@ -50,17 +50,31 @@ export type CartItem = {
   size: Size;
   quantity: number;
 };
-export const generateSchema = z.object({
-  prompt: z
-    .string()
-    .trim()
-    .min(8, "Describe your idea in at least 8 characters.")
-    .max(1600),
-  style: z.enum(styles),
-  garment: z.enum(["hoodie", "tee"]),
-  color: z.string().max(30),
-  count: z.number().int().min(1).max(4).default(4),
-});
+export const generateSchema = z
+  .object({
+    prompt: z
+      .string()
+      .trim()
+      .min(8, "Describe your idea in at least 8 characters.")
+      .max(1600),
+    style: z.enum(styles),
+    garment: z.enum(["hoodie", "tee"]),
+    color: z.string().max(30),
+    count: z.number().int().min(1).max(4).default(4),
+    referenceImage: z
+      .string()
+      .max(3600000)
+      .regex(/^data:image\/(png|webp);base64,[A-Za-z0-9+/]+={0,2}$/)
+      .optional(),
+    editInstruction: z.string().trim().min(8).max(1600).optional(),
+  })
+  .superRefine((data, context) => {
+    if (data.referenceImage && (data.count !== 1 || !data.editInstruction))
+      context.addIssue({
+        code: "custom",
+        message: "Refinement needs one selected image and an edit instruction.",
+      });
+  });
 export const sampleDesigns: Design[] = [
   {
     id: "sample-dragon",

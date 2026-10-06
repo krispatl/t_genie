@@ -1,6 +1,11 @@
 import type { CartItem, Design } from "./catalog";
+import type { DesignBrief } from "./design-agent";
 
-export type SavedStudio = { designs: Design[]; cart: CartItem[] };
+export type SavedStudio = {
+  designs: Design[];
+  cart: CartItem[];
+  project?: { brief: DesignBrief; design: Design; concepts: Design[] };
+};
 function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open("t-genie-studio", 1);

@@ -1,29 +1,24 @@
 import { generateSchema } from "@/lib/catalog";
+import { buildImageRequest } from "@/lib/image-request";
 import { allowGeneration, authorize } from "@/lib/server-security";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
-const directions = [
-  "Bold centered composition, expressive character, striking silhouette.",
-  "Fresh alternate composition with a dynamic diagonal pose and playful details.",
-  "A collectible concert-poster composition, dramatic lighting and fine linework.",
-  "An adventurous alternate with a different angle, restrained palette and graphic shapes.",
-];
 export async function POST(request: Request) {
   const denied = authorize(request);
   if (denied)
     return Response.json({ error: denied.error }, { status: denied.status });
-  if (Number(request.headers.get("content-length") || 0) > 12000)
+  if (Number(request.headers.get("content-length") || 0) > 3800000)
     return Response.json(
-      { error: "The description is too long." },
+      { error: "The design request is too large." },
       { status: 413 },
     );
   let body;
   try {
     const text = await request.text();
-    if (text.length > 12000)
+    if (text.length > 3800000)
       return Response.json(
-        { error: "The description is too long." },
+        { error: "The design request is too large." },
         { status: 413 },
       );
     body = generateSchema.safeParse(JSON.parse(text));
@@ -38,6 +33,14 @@ export async function POST(request: Request) {
       { error: body.error.issues[0].message },
       { status: 400 },
     );
+  try {
+    buildImageRequest(body.data, 0);
+  } catch {
+    return Response.json(
+      { error: "The selected artwork must be a valid PNG or WebP image." },
+      { status: 400 },
+    );
+  }
   try {
     if (!(await allowGeneration()))
       return Response.json(
@@ -75,28 +78,13 @@ export async function POST(request: Request) {
       await Promise.all(
         Array.from({ length: settings.count }, async (_, index) => {
           try {
-            const response = await fetch(
-              "https://api.openai.com/v1/images/generations",
-              {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  model:
-                    process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-flare",
-                  prompt: `Create original artwork for an apparel print. User concept: ${settings.prompt}\nArt direction: ${settings.style}. ${directions[index]}\nThe print will appear on a ${settings.color} ${settings.garment}. Create the ARTWORK ONLY, no garment, product photograph, mockup, model or watermark. Isolate the composition on a genuinely transparent background. Use strong legible shapes, clean edges, and sufficient contrast. Keep the whole design within the canvas with breathing room. Include words only when explicitly requested in the concept.`,
-                  n: 1,
-                  size: "1024x1024",
-                  quality: "medium",
-                  background: "transparent",
-                  output_format: "webp",
-                  output_compression: 75,
-                }),
-                signal,
-              },
-            );
+            const imageRequest = buildImageRequest(settings, index);
+            const response = await fetch(imageRequest.url, {
+              method: "POST",
+              headers: imageRequest.headers,
+              body: imageRequest.body,
+              signal,
+            });
             if (!response.ok) {
               const detail = await response.json().catch(() => ({}));
               // Log only non-sensitive status/code/request ID; never prompts or credentials.
@@ -142,7 +130,9 @@ export async function POST(request: Request) {
               index,
               design: {
                 id: crypto.randomUUID(),
-                name: `Concept ${String(index + 1).padStart(2, "0")}`,
+                name: settings.referenceImage
+                  ? "Refined concept"
+                  : `Concept ${String(index + 1).padStart(2, "0")}`,
                 prompt: settings.prompt,
                 image: `data:image/webp;base64,${data}`,
                 createdAt: Date.now(),

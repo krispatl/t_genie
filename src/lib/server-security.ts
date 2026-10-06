@@ -15,7 +15,7 @@ export function authorize(
     return {
       status: 503,
       error:
-        "Live generation isn’t connected yet. You can explore the studio with the sample designs.",
+        "Genie isn’t connected yet. You can explore the studio with the sample designs.",
     };
   if (
     process.env.NODE_ENV === "production" &&
@@ -24,7 +24,7 @@ export function authorize(
     return {
       status: 503,
       error:
-        "The studio owner needs to configure the studio access code before enabling live generation.",
+        "The studio owner needs to configure the studio access code before enabling Genie.",
     };
   }
   if (
@@ -36,7 +36,8 @@ export function authorize(
   ) {
     return {
       status: 401,
-      error: "Enter your studio access code to generate designs.",
+      error:
+        "Enter your studio access code to chat with Genie and create designs.",
     };
   }
   const origin = request.headers.get("origin");
@@ -61,11 +62,11 @@ export function authorize(
   return null;
 }
 const windows = new Map<string, { count: number; until: number }>();
-export async function allowGeneration() {
+async function allowRequest(bucket: string, limit: number) {
   // Shared studio code is the access boundary. Rate limit the studio as a whole,
   // rather than trusting user-supplied forwarded IP headers.
   const key =
-    "t-genie:generation:" +
+    `t-genie:${bucket}:` +
     createHash("sha256")
       .update(process.env.STUDIO_ACCESS_CODE || "local")
       .digest("hex")
@@ -99,7 +100,7 @@ export async function allowGeneration() {
       result.some((entry) => entry.error)
     )
       throw new Error("Invalid rate limit response");
-    return result[0].result <= 12;
+    return result[0].result <= limit;
   }
   const previous = windows.get(key);
   const current =
@@ -108,5 +109,7 @@ export async function allowGeneration() {
       : { count: 0, until: now + 3600000 };
   current.count += 1;
   windows.set(key, current);
-  return current.count <= 12;
+  return current.count <= limit;
 }
+export const allowGeneration = () => allowRequest("generation", 12);
+export const allowAgentTurn = () => allowRequest("agent", 120);

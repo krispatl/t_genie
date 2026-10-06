@@ -19,11 +19,9 @@ import {
   RotateCcw,
   ShieldCheck,
   ShoppingBag,
-  Shuffle,
   SlidersHorizontal,
   Sparkles,
   Trash2,
-  WandSparkles,
   X,
 } from "lucide-react";
 import {
@@ -42,10 +40,15 @@ import {
 import { readStudio, writeStudio } from "@/lib/storage";
 import GarmentPreview from "./garment";
 import Modal from "./modal";
+import DesignAgent from "./design-agent";
+import {
+  briefSchema,
+  type AgentReply,
+  type DesignBrief,
+  type GenerationPlan,
+} from "@/lib/design-agent";
 
 type Dialog = "saved" | "bag" | "how" | "size" | "access" | "zoom" | null;
-const initialPrompt =
-  "A cartoon dragon rapping into a vintage microphone, with a retro concert poster vibe";
 const inspiration = [
   "A cosmic cowboy riding a shooting star",
   "A sleepy cat running a tiny coffee shop",
@@ -62,7 +65,7 @@ function Brand({ small = false }: { small?: boolean }) {
   );
 }
 export default function Studio() {
-  const [prompt, setPrompt] = useState(initialPrompt);
+  const [prompt, setPrompt] = useState("");
   const [style, setStyle] = useState<(typeof styles)[number]>("Illustration");
   const [garment, setGarment] = useState<Garment>("hoodie");
   const [color, setColor] = useState(0);
@@ -84,6 +87,7 @@ export default function Studio() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [completed, setCompleted] = useState(0);
+  const [expected, setExpected] = useState(4);
   const [elapsed, setElapsed] = useState(0);
   const [status, setStatus] = useState({ enabled: false, locked: false });
   const [code, setCode] = useState("");
@@ -102,11 +106,20 @@ export default function Studio() {
     country: "United States",
   });
   const abort = useRef<AbortController | null>(null);
-  const promptRef = useRef<HTMLTextAreaElement>(null);
+  const pendingAccess = useRef<((code: string) => void) | null>(null);
   const productRef = useRef<HTMLElement>(null);
   const totalQuantity = Object.values(selectedSizes).reduce((a, b) => a + b, 0);
   const bagCount = cart.reduce((a, item) => a + item.quantity, 0);
   const isSaved = saved.some((item) => item.id === design.id);
+  const designBrief: DesignBrief = {
+    prompt,
+    style,
+    garment,
+    color,
+    placement,
+    scale,
+    sizes: selectedSizes,
+  };
 
   useEffect(() => {
     fetch("/api/status")
@@ -118,6 +131,16 @@ export default function Studio() {
         if (data) {
           setSaved(data.designs || []);
           setCart(data.cart || []);
+          if (data.project) {
+            const restored = briefSchema.safeParse(data.project.brief);
+            if (restored.success) applyBrief(restored.data);
+            if (data.project.design?.image) setDesign(data.project.design);
+            if (
+              Array.isArray(data.project.concepts) &&
+              data.project.concepts.length
+            )
+              setConcepts(data.project.concepts);
+          }
         }
       })
       .catch(() =>
@@ -130,12 +153,29 @@ export default function Studio() {
   }, []);
   useEffect(() => {
     if (hydrated)
-      writeStudio({ designs: saved, cart }).catch(() =>
+      writeStudio({
+        designs: saved,
+        cart,
+        project: { brief: designBrief, design, concepts },
+      }).catch(() =>
         setToast(
           "Your browser could not save this change. Download your artwork to keep a copy.",
         ),
       );
-  }, [saved, cart, hydrated]);
+  }, [
+    saved,
+    cart,
+    hydrated,
+    prompt,
+    style,
+    garment,
+    color,
+    placement,
+    scale,
+    selectedSizes,
+    design,
+    concepts,
+  ]);
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(""), 4500);
@@ -147,32 +187,113 @@ export default function Studio() {
     return () => clearInterval(timer);
   }, [busy]);
 
-  async function generate(accessCode = code) {
-    if (busy) return;
-    if (prompt.trim().length < 8) {
+  function applyBrief(next: DesignBrief) {
+    setPrompt(next.prompt);
+    setStyle(next.style);
+    setGarment(next.garment);
+    setColor(next.color);
+    setPlacement(next.placement);
+    setScale(next.scale);
+    setSelectedSizes(next.sizes);
+  }
+  function applyAgentReply(reply: AgentReply) {
+    applyBrief(reply.brief);
+    const selection = concepts.find((item) => item.id === reply.selectedId);
+    if (selection) setDesign(selection);
+  }
+  async function generate(
+    accessCode = code,
+    options?: { brief: DesignBrief; reference?: Design; instruction?: string },
+  ): Promise<{ count: number; error?: string }> {
+    const requested = options?.brief || designBrief;
+    const count = options?.reference ? 1 : 4;
+    if (busy)
+      return { count: 0, error: "Another artwork job is already running." };
+    if (requested.prompt.trim().length < 8) {
       setError("Give your idea a little more detail — at least 8 characters.");
-      promptRef.current?.focus();
-      return;
+      return { count: 0, error: "The artwork brief needs more detail." };
     }
     if (!status.enabled) {
       setError(
         "You’re exploring sample designs. The studio owner can connect OpenAI to create something new.",
       );
-      return;
+      return { count: 0, error: "The studio owner needs to connect OpenAI." };
     }
     if (status.locked && !accessCode) {
+      pendingAccess.current = (newCode) => {
+        void generate(newCode, options);
+      };
       setDialog("access");
-      return;
+      return { count: 0, error: "Unlock the studio to generate artwork." };
     }
     setError("");
     setBusy(true);
     setCompleted(0);
+    setExpected(count);
     setElapsed(0);
     const controller = new AbortController();
     abort.current = controller;
     const received: Design[] = [];
     const pending: Record<number, Design> = {};
+    let failure = "";
     try {
+      let referenceImage: string | undefined;
+      if (options?.reference) {
+        if (options.reference.image.startsWith("data:"))
+          referenceImage = options.reference.image;
+        else {
+          const referenceResponse = await fetch(options.reference.image, {
+            signal: controller.signal,
+          });
+          if (!referenceResponse.ok)
+            throw new Error("The selected artwork could not be loaded.");
+          const blob = await referenceResponse.blob();
+          if (blob.type.startsWith("image/svg+xml")) {
+            const url = URL.createObjectURL(blob);
+            try {
+              const image = new Image();
+              await new Promise<void>((resolve, reject) => {
+                image.onload = () => resolve();
+                image.onerror = () =>
+                  reject(new Error("The artwork could not be loaded."));
+                image.src = url;
+              });
+              const canvas = document.createElement("canvas");
+              canvas.width = 1024;
+              canvas.height = 1024;
+              const context = canvas.getContext("2d");
+              if (!context)
+                throw new Error("The artwork preview could not be prepared.");
+              const ratio = Math.min(1024 / image.width, 1024 / image.height);
+              const width = image.width * ratio;
+              const height = image.height * ratio;
+              context.drawImage(
+                image,
+                (1024 - width) / 2,
+                (1024 - height) / 2,
+                width,
+                height,
+              );
+              referenceImage = canvas.toDataURL("image/png");
+            } finally {
+              URL.revokeObjectURL(url);
+            }
+          } else {
+            if (
+              !blob.type.startsWith("image/png") &&
+              !blob.type.startsWith("image/webp")
+            )
+              throw new Error("The selected artwork format cannot be refined.");
+            referenceImage = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result));
+              reader.onerror = () =>
+                reject(new Error("The artwork could not be read."));
+              reader.readAsDataURL(blob);
+            });
+          }
+        }
+      }
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: {
@@ -180,11 +301,13 @@ export default function Studio() {
           "x-studio-code": accessCode,
         },
         body: JSON.stringify({
-          prompt,
-          style,
-          garment,
-          color: colors[color].name,
-          count: 4,
+          prompt: requested.prompt,
+          style: requested.style,
+          garment: requested.garment,
+          color: colors[requested.color].name,
+          count,
+          referenceImage,
+          editInstruction: options?.instruction,
         }),
         signal: controller.signal,
       });
@@ -209,16 +332,18 @@ export default function Studio() {
         if (event.type === "design") {
           pending[event.index] = event.design;
           received.push(event.design);
+          const batch = Object.keys(pending)
+            .map(Number)
+            .sort((a, b) => a - b)
+            .map((i) => pending[i]);
           setConcepts(
-            Object.keys(pending)
-              .map(Number)
-              .sort((a, b) => a - b)
-              .map((i) => pending[i]),
+            options?.reference ? [...batch, ...concepts].slice(0, 4) : batch,
           );
           if (received.length === 1) setDesign(event.design);
           setCompleted((n) => n + 1);
         }
         if (event.type === "error") {
+          failure = event.message;
           setError(event.message);
           setCompleted((n) => n + 1);
         }
@@ -240,6 +365,12 @@ export default function Studio() {
         );
       }
     } catch (e) {
+      failure =
+        e instanceof Error && e.name === "AbortError"
+          ? "Generation stopped."
+          : e instanceof Error
+            ? e.message
+            : "Something went wrong.";
       if (e instanceof Error && e.name === "AbortError")
         setToast(
           "Generation stopped. Any completed concepts are still available.",
@@ -256,6 +387,21 @@ export default function Studio() {
       setBusy(false);
       abort.current = null;
     }
+    return { count: received.length, error: failure || undefined };
+  }
+  async function generateFromAgent(
+    brief: DesignBrief,
+    plan: GenerationPlan,
+    selectedId: string | null,
+  ) {
+    const reference =
+      plan.mode === "refine"
+        ? concepts.find((item) => item.id === selectedId) ||
+          (design.id === selectedId ? design : undefined)
+        : undefined;
+    if (plan.mode === "refine" && !reference)
+      return { count: 0, error: "Select a concept to refine first." };
+    return generate(code, { brief, reference, instruction: plan.instruction });
   }
   function chooseSample(item: Design) {
     setDesign(item);
@@ -442,15 +588,15 @@ export default function Studio() {
         <section className="intro" aria-labelledby="intro-title">
           <div>
             <p className="eyebrow">
-              <span className="tiny-star">✦</span> YOUR PERSONAL AI DESIGN
-              STUDIO
+              <span className="tiny-star">✦</span> YOUR PERSONAL AI DESIGN AGENT
             </p>
             <h1 id="intro-title">
               Wear your <em>imagination.</em>
               <span className="heading-star">✧</span>
             </h1>
             <p className="intro-copy">
-              That idea in your head? Let’s put it on something you love.
+              Tell Genie your idea. Shape it together. Wear something only you
+              could imagine.
             </p>
           </div>
           <div className="intro-note">
@@ -491,136 +637,31 @@ export default function Studio() {
           <span className="studio-status">
             <span />
             {status.enabled
-              ? "AI-powered, you-directed"
-              : "Sample studio · Explore freely"}
+              ? "Your design partner is ready"
+              : "Explore the studio · Agent not connected"}
           </span>
         </div>
         <section className="studio-grid" aria-label="Apparel design studio">
-          <aside className="idea-panel">
-            <div className="panel-title">
-              <span className="small-icon">
-                <Sparkles size={17} />
-              </span>
-              <h2>A little creative magic</h2>
-            </div>
-            <p className="muted panel-description">
-              Start with a thought. Make it a statement.
-            </p>
-            <label className="field-label" htmlFor="idea">
-              What are you imagining?
-            </label>
-            <div className="prompt-box">
-              <textarea
-                id="idea"
-                ref={promptRef}
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                maxLength={1600}
-                placeholder="A dragon dropping bars. A cosmic cowboy. Your wonderfully weird idea…"
-                disabled={busy}
-              />
-              <div className="prompt-bottom">
-                <span>
-                  <span className="tiny-star">✦</span> The more detail, the more
-                  you.
-                </span>
-                <span>{prompt.length}/1600</span>
-              </div>
-            </div>
-            <button
-              className="surprise"
-              disabled={busy}
-              onClick={() => {
-                setPrompt(
-                  inspiration[Math.floor(Math.random() * inspiration.length)],
-                );
-                setError("");
-                promptRef.current?.focus();
-              }}
-            >
-              <Shuffle size={14} /> Surprise me with an idea
-            </button>
-            <div className="label-row">
-              <span className="field-label">Pick a vibe</span>
-              <span className="optional">Make it your style</span>
-            </div>
-            <div className="style-grid">
-              {styles.map((item, index) => (
-                <button
-                  key={item}
-                  className={style === item ? "selected" : ""}
-                  onClick={() => setStyle(item)}
-                  disabled={busy}
-                  aria-pressed={style === item}
-                >
-                  <span className={`style-glyph glyph-${index}`}>
-                    {["✳", "☼", "◯", "↗"][index]}
-                  </span>
-                  {item}
-                  {style === item && <Check size={12} />}
-                </button>
-              ))}
-            </div>
-            <button
-              className="primary generate-button"
-              disabled={busy}
-              onClick={() => generate()}
-            >
-              {busy ? (
-                <LoaderCircle className="spin" size={18} />
-              ) : (
-                <WandSparkles size={18} />
-              )}
-              {busy ? "A little magic in progress…" : "Make some magic"}
-              {!busy && <ArrowRight size={17} />}
-            </button>
-            <div className="generation-caption">
-              {busy ? (
-                <>
-                  <span>
-                    {completed}/4 concepts · {elapsed}s
-                  </span>
-                  <button onClick={() => abort.current?.abort()}>Stop</button>
-                </>
-              ) : (
-                <>
-                  <span>4 original concepts</span>
-                  <span>
-                    Powered by OpenAI <Sparkles size={11} />
-                  </span>
-                </>
-              )}
-            </div>
-            {busy && (
-              <div className="progress-track">
-                <span
-                  style={{ width: `${Math.max(8, (completed / 4) * 100)}%` }}
-                />
-              </div>
-            )}
-            {error && (
-              <div className="inline-error" role="alert">
-                {error}
-                <button aria-label="Dismiss error" onClick={() => setError("")}>
-                  <X size={13} />
-                </button>
-              </div>
-            )}
-            <div className="genie-note">
-              <span className="genie-avatar">✦</span>
-              <div>
-                <strong>Your idea is my command.</strong>
-                <p>
-                  Try a subject, a mood, and a few colors. I’ll take it from
-                  there.
-                </p>
-              </div>
-            </div>
-            <div className="ideas-foot">
-              <ShieldCheck size={14} />
-              <span>Your creativity. Your original design.</span>
-            </div>
-          </aside>
+          <DesignAgent
+            brief={designBrief}
+            design={design}
+            concepts={concepts}
+            accessCode={code}
+            enabled={status.enabled}
+            generating={busy}
+            completed={completed}
+            expected={expected}
+            elapsed={elapsed}
+            generationError={error}
+            onApply={applyAgentReply}
+            onGenerate={generateFromAgent}
+            onNeedAccess={(resume) => {
+              pendingAccess.current = resume;
+              setDialog("access");
+            }}
+            onStopGeneration={() => abort.current?.abort()}
+            onBriefChange={setPrompt}
+          />
           <section className="preview-panel" aria-label="Design preview">
             <div className="preview-toolbar">
               <span className="preview-label">
@@ -918,7 +959,7 @@ export default function Studio() {
                 setPrompt(
                   inspiration[Math.floor(Math.random() * inspiration.length)],
                 );
-                promptRef.current?.focus();
+                document.getElementById("genie-message")?.focus();
                 document
                   .querySelector("#studio")
                   ?.scrollIntoView({ behavior: "smooth" });
@@ -1010,11 +1051,11 @@ export default function Studio() {
             {[
               {
                 title: "Dream it",
-                text: "Describe your idea and choose a style. With live generation connected, Genie creates four original concepts for you.",
+                text: "Chat with Genie about your idea. Your design agent asks useful questions, remembers your choices, and builds the brief with you. Ask it to generate four concepts when you are ready.",
               },
               {
                 title: "Make it yours",
-                text: "Choose your favorite, pick a hoodie or T-shirt, and play with color, placement, and print size. Download the artwork or save it in this browser.",
+                text: "Tell Genie which concept you like and what to change. It updates the garment preview and can edit the selected artwork. You can also adjust the controls yourself, save designs, and download artwork.",
               },
               {
                 title: "Plan your order",
@@ -1042,7 +1083,7 @@ export default function Studio() {
             className="primary full"
             onClick={() => {
               setDialog(null);
-              promptRef.current?.focus();
+              document.getElementById("genie-message")?.focus();
             }}
           >
             Let’s make something <ArrowRight size={16} />
@@ -1052,15 +1093,17 @@ export default function Studio() {
       {dialog === "access" && (
         <Modal title="Your studio, unlocked." onClose={() => setDialog(null)}>
           <p className="modal-intro">
-            Enter the access code from the studio owner to create original
-            artwork.
+            Enter the access code from the studio owner to chat with Genie and
+            create original artwork.
           </p>
           <form
             onSubmit={(e) => {
               e.preventDefault();
               setCode(codeDraft);
               setDialog(null);
-              void generate(codeDraft);
+              const resume = pendingAccess.current;
+              pendingAccess.current = null;
+              if (resume) resume(codeDraft);
             }}
           >
             <label className="field-label" htmlFor="studio-code">
@@ -1080,7 +1123,7 @@ export default function Studio() {
               This is the studio passphrase, never your OpenAI API key.
             </p>
             <button className="primary full" type="submit">
-              <LockKeyhole size={16} /> Unlock & create concepts
+              <LockKeyhole size={16} /> Unlock Genie
             </button>
           </form>
         </Modal>
